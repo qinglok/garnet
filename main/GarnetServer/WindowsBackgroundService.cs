@@ -1,32 +1,49 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-using System.IO;
+using System;
+using System.Threading;
+using System.Threading.Tasks;
 using Garnet.server;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 namespace Garnet
 {
-    /// <summary>
-    /// Garnet server entry point
-    /// </summary>
-    class Program
+    public sealed class WindowsBackgroundService : BackgroundService
     {
-        static void Main(string[] args)
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            Directory.SetCurrentDirectory(@"D:\LQL\GarnetServer");
-            var builder = Host.CreateApplicationBuilder(args);
-            builder.Services.AddWindowsService(options =>
+            var args = new[] { "--storage-tier", "-r", "--aof" };
+            try
             {
-                options.ServiceName = "Garnet Server";
-            });
+                using var server = new GarnetServer(args);
 
-            builder.Services.AddHostedService<WindowsBackgroundService>();
+                // Optional: register custom extensions
+                RegisterExtensions(server);
 
+                // Start the server
+                server.Start();
 
-            var host = builder.Build();
-            host.Run();
+                await Task.Delay(Timeout.Infinite, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // When the stopping token is canceled, for example, a call made from services.msc,
+                // we shouldn't exit with a non-zero exit code. In other words, this is expected...
+            }
+            catch (Exception ex)
+            {
+                // Terminates this process and returns an exit code to the operating system.
+                // This is required to avoid the 'BackgroundServiceExceptionBehavior', which
+                // performs one of two scenarios:
+                // 1. When set to "Ignore": will do nothing at all, errors cause zombie services.
+                // 2. When set to "StopHost": will cleanly stop the host, and log errors.
+                //
+                // In order for the Windows Service Management system to leverage configured
+                // recovery options, we need to terminate the process with a non-zero exit code.
+                Console.WriteLine($"Unable to initialize server due to exception: {ex.Message}");
+                Environment.Exit(1);
+            }
         }
 
         /// <summary>
